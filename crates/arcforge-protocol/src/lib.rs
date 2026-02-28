@@ -45,5 +45,6 @@ pub use codec::Codec;
 pub use codec::JsonCodec;
 pub use error::ProtocolError;
 pub use types::{
-    Channel, Envelope, Payload, PlayerId, Recipient, RoomId, SystemMessage,
+    Channel, Envelope, Payload, PlayerId, Recipient, RoomId, RoomListEntry,
+    SystemMessage,
 };

@@ -160,6 +160,74 @@ impl<G: GameLogic> RoomManager<G> {
         self.player_rooms.get(player_id).copied()
     }
 
+    /// Lists all rooms that are currently joinable.
+    ///
+    /// Queries each room actor for its current info. Rooms that fail
+    /// to respond (e.g., shutting down) are silently skipped.
+    pub async fn list_rooms(&self) -> Vec<RoomInfo> {
+        let mut infos = Vec::with_capacity(self.rooms.len());
+        for handle in self.rooms.values() {
+            if let Ok(info) = handle.get_info().await {
+                if info.state.is_joinable() {
+                    infos.push(info);
+                }
+            }
+        }
+        infos
+    }
+
+    /// Returns cloned handles to all active rooms.
+    ///
+    /// Useful when callers need to perform async operations on rooms
+    /// without holding the manager lock.
+    pub fn room_handles(&self) -> Vec<RoomHandle<G>> {
+        self.rooms.values().cloned().collect()
+    }
+
+    /// Finds a joinable room or creates a new one, then joins the player.
+    ///
+    /// This is the simple matchmaking for MVP: scan existing rooms for
+    /// one that's still accepting players, join it. If none found, create
+    /// a new room with the default game config and join that.
+    pub async fn join_or_create(
+        &mut self,
+        player_id: PlayerId,
+        game_config: G::Config,
+    ) -> Result<RoomId, RoomError> {
+        // Check if player is already in a room.
+        if let Some(existing) = self.player_rooms.get(&player_id) {
+            return Err(RoomError::InvalidState(format!(
+                "player {} is already in room {}",
+                player_id, existing
+            )));
+        }
+
+        // Try to find a joinable room.  If join() fails due to a race
+        // (room filled between get_info and join), keep searching.
+        for handle in self.rooms.values() {
+            if let Ok(info) = handle.get_info().await {
+                if info.state.is_joinable()
+                    && info.player_count < info.max_players
+                {
+                    if let Ok(()) = handle.join(player_id).await {
+                        self.player_rooms.insert(player_id, info.room_id);
+                        return Ok(info.room_id);
+                    }
+                }
+            }
+        }
+
+        // No joinable room found — create one.
+        let room_id = self.create_room(game_config);
+        let handle = self
+            .rooms
+            .get(&room_id)
+            .expect("just created this room");
+        handle.join(player_id).await?;
+        self.player_rooms.insert(player_id, room_id);
+        Ok(room_id)
+    }
+
     /// Returns the number of active rooms.
     pub fn room_count(&self) -> usize {
         self.rooms.len()

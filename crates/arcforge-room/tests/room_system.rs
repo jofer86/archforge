@@ -326,3 +326,66 @@ async fn test_game_finishes_on_target() {
     let info = mgr.get_room_info(room).await.unwrap();
     assert_eq!(info.state, RoomState::Finished);
 }
+
+#[tokio::test]
+async fn test_list_rooms_empty() {
+    let mgr = RoomManager::<CounterGame>::new();
+    let rooms = mgr.list_rooms().await;
+    assert!(rooms.is_empty());
+}
+
+#[tokio::test]
+async fn test_list_rooms_returns_joinable_only() {
+    let mut mgr = RoomManager::<CounterGame>::new();
+    let r1 = mgr.create_room(CounterConfig::default());
+    let r2 = mgr.create_room(CounterConfig::default());
+
+    // r2 gets filled → starts → no longer joinable
+    mgr.join_room(pid(10), r2).await.unwrap();
+    mgr.join_room(pid(11), r2).await.unwrap();
+    tokio::time::sleep(Duration::from_millis(10)).await;
+
+    let rooms = mgr.list_rooms().await;
+    assert_eq!(rooms.len(), 1);
+    assert_eq!(rooms[0].room_id, r1);
+}
+
+#[tokio::test]
+async fn test_join_or_create_creates_when_empty() {
+    let mut mgr = RoomManager::<CounterGame>::new();
+    let room_id = mgr
+        .join_or_create(pid(1), CounterConfig::default())
+        .await
+        .unwrap();
+
+    assert_eq!(mgr.room_count(), 1);
+    assert_eq!(mgr.player_room(&pid(1)), Some(room_id));
+}
+
+#[tokio::test]
+async fn test_join_or_create_joins_existing() {
+    let mut mgr = RoomManager::<CounterGame>::new();
+    let _r1 = mgr.create_room(CounterConfig::default());
+
+    let room_id = mgr
+        .join_or_create(pid(1), CounterConfig::default())
+        .await
+        .unwrap();
+
+    // Should have joined the existing room, not created a new one.
+    assert_eq!(mgr.room_count(), 1);
+    assert_eq!(room_id, _r1);
+}
+
+#[tokio::test]
+async fn test_join_or_create_already_in_room() {
+    let mut mgr = RoomManager::<CounterGame>::new();
+    mgr.join_or_create(pid(1), CounterConfig::default())
+        .await
+        .unwrap();
+
+    let result = mgr
+        .join_or_create(pid(1), CounterConfig::default())
+        .await;
+    assert!(result.is_err());
+}

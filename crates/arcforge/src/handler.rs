@@ -11,7 +11,8 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use arcforge_protocol::{
-    Codec, Channel, Envelope, Payload, PlayerId, SystemMessage,
+    Codec, Channel, Envelope, Payload, PlayerId, RoomListEntry,
+    SystemMessage,
 };
 use arcforge_room::GameLogic;
 use arcforge_session::Authenticator;
@@ -294,6 +295,79 @@ where
                     .await?;
                 }
             }
+        }
+
+        SystemMessage::JoinOrCreate { .. } => {
+            // MVP: `name` and `options` are ignored — single game type,
+            // default config. Phase 2 will use these for multi-game servers.
+            let result = {
+                let mut rooms = state.rooms.lock().await;
+                rooms
+                    .join_or_create(player_id, G::Config::default())
+                    .await
+            };
+
+            match result {
+                Ok(room_id) => {
+                    let resp = Envelope {
+                        seq: next_seq(seq),
+                        timestamp: start.elapsed().as_millis() as u64,
+                        channel: Channel::ReliableOrdered,
+                        payload: Payload::System(
+                            SystemMessage::RoomJoined {
+                                room_id,
+                                // TODO: populate with reconnection token
+                                session_id: String::new(),
+                            },
+                        ),
+                    };
+                    let bytes = state.codec.encode(&resp)?;
+                    conn.send(&bytes)
+                        .await
+                        .map_err(ArcforgeError::Transport)?;
+                }
+                Err(e) => {
+                    send_error(
+                        conn,
+                        &state.codec,
+                        409,
+                        &e.to_string(),
+                        next_seq(seq),
+                        start,
+                    )
+                    .await?;
+                }
+            }
+        }
+
+        SystemMessage::ListRooms => {
+            let handles = state.rooms.lock().await.room_handles();
+
+            let mut entries = Vec::with_capacity(handles.len());
+            for handle in &handles {
+                if let Ok(info) = handle.get_info().await {
+                    if info.state.is_joinable() {
+                        entries.push(RoomListEntry {
+                            room_id: info.room_id,
+                            player_count: info.player_count,
+                            max_players: info.max_players,
+                        });
+                    }
+                }
+            }
+
+            let resp = Envelope {
+                seq: next_seq(seq),
+                timestamp: start.elapsed().as_millis() as u64,
+                channel: Channel::ReliableOrdered,
+                payload: Payload::System(SystemMessage::RoomList {
+                    rooms: entries,
+                }),
+            };
+            let bytes = state.codec.encode(&resp)?;
+            conn.send(&bytes)
+                .await
+                .map_err(ArcforgeError::Transport)?;
         }
 
         SystemMessage::LeaveRoom => {

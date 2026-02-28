@@ -46,7 +46,7 @@ pub mod prelude {
     // Protocol types
     pub use arcforge_protocol::{
         Channel, Codec, Envelope, JsonCodec, Payload, PlayerId,
-        ProtocolError, Recipient, RoomId, SystemMessage,
+        ProtocolError, Recipient, RoomId, RoomListEntry, SystemMessage,
     };
 
     // Session types

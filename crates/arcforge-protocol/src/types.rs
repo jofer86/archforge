@@ -132,6 +132,17 @@ pub enum Channel {
 // SystemMessage — framework-level messages
 // ---------------------------------------------------------------------------
 
+/// A summary of a room returned in room listings.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RoomListEntry {
+    /// The room's unique ID.
+    pub room_id: RoomId,
+    /// Number of players currently in the room.
+    pub player_count: usize,
+    /// Maximum players allowed.
+    pub max_players: usize,
+}
+
 /// Messages used by the framework itself (not game-specific).
 ///
 /// These handle the "plumbing": connecting, authenticating, joining rooms,
@@ -201,6 +212,14 @@ pub enum SystemMessage {
 
     /// Client → Server: "I'm leaving the room."
     LeaveRoom,
+
+    /// Client → Server: "Show me available rooms."
+    ListRooms,
+
+    /// Server → Client: "Here are the available rooms."
+    RoomList {
+        rooms: Vec<RoomListEntry>,
+    },
 
     /// Server → Client: "Here's the current game state."
     /// The `Vec<u8>` is the game state serialized by the codec.
@@ -584,6 +603,43 @@ mod tests {
     // =====================================================================
     // Error cases — malformed input
     // =====================================================================
+
+    #[test]
+    fn test_system_message_list_rooms_round_trip() {
+        let msg = SystemMessage::ListRooms;
+        let bytes = serde_json::to_vec(&msg).unwrap();
+        let decoded: SystemMessage = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(msg, decoded);
+    }
+
+    #[test]
+    fn test_system_message_room_list_round_trip() {
+        let msg = SystemMessage::RoomList {
+            rooms: vec![
+                RoomListEntry {
+                    room_id: RoomId(1),
+                    player_count: 2,
+                    max_players: 4,
+                },
+                RoomListEntry {
+                    room_id: RoomId(2),
+                    player_count: 0,
+                    max_players: 8,
+                },
+            ],
+        };
+        let bytes = serde_json::to_vec(&msg).unwrap();
+        let decoded: SystemMessage = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(msg, decoded);
+    }
+
+    #[test]
+    fn test_system_message_room_list_empty() {
+        let msg = SystemMessage::RoomList { rooms: vec![] };
+        let bytes = serde_json::to_vec(&msg).unwrap();
+        let decoded: SystemMessage = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(msg, decoded);
+    }
 
     #[test]
     fn test_decode_garbage_returns_error() {
