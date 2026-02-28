@@ -278,7 +278,12 @@ impl<G: GameLogic> RoomActor<G> {
             if let Some(game_state) = &mut self.game_state {
                 let msgs =
                     G::on_player_disconnect(game_state, player_id);
+                let finished = G::is_finished(game_state);
                 self.dispatch(msgs);
+                if finished {
+                    self.state = RoomState::Finished;
+                    tracing::info!(room_id = %self.room_id, "game finished");
+                }
             }
         }
 

@@ -79,25 +79,26 @@ where
     // Room outbound receiver — set when the player joins a room.
     let mut room_rx: Option<mpsc::UnboundedReceiver<RoomOutbound<G>>> =
         None;
+    let idle_deadline = tokio::time::sleep(Duration::from_secs(15));
+    tokio::pin!(idle_deadline);
 
     loop {
         tokio::select! {
             // Inbound: data from the client WebSocket.
-            ws_result = async {
-                tokio::time::timeout(Duration::from_secs(15), conn.recv()).await
-            } => {
+            ws_result = conn.recv() => {
+                // Reset idle timer on any inbound data.
+                idle_deadline
+                    .as_mut()
+                    .reset(tokio::time::Instant::now() + Duration::from_secs(15));
+
                 let data = match ws_result {
-                    Ok(Ok(Some(data))) => data,
-                    Ok(Ok(None)) => {
+                    Ok(Some(data)) => data,
+                    Ok(None) => {
                         tracing::info!(%player_id, "connection closed cleanly");
                         break;
                     }
-                    Ok(Err(e)) => {
+                    Err(e) => {
                         tracing::debug!(%player_id, error = %e, "recv error");
-                        break;
-                    }
-                    Err(_) => {
-                        tracing::info!(%player_id, "connection timed out");
                         break;
                     }
                 };
@@ -166,6 +167,12 @@ where
                 conn.send(&bytes)
                     .await
                     .map_err(ArcforgeError::Transport)?;
+            }
+
+            // Idle timeout: fires if no inbound data for 15 seconds.
+            () = &mut idle_deadline => {
+                tracing::info!(%player_id, "connection timed out");
+                break;
             }
         }
     }
