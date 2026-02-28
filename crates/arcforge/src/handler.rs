@@ -351,26 +351,14 @@ where
         }
     };
 
-    // Lock only to look up the room and route the message, then drop.
     // PERF: cache room handle per-connection to avoid global lock on
     // every game message. Acceptable for MVP (<100 CCU).
-    let result = {
-        let rooms = state.rooms.lock().await;
-        if rooms.player_room(&player_id).is_none() {
-            drop(rooms);
-            send_error(
-                conn,
-                &state.codec,
-                400,
-                &format!("player {} is not in any room", player_id),
-                next_seq(seq),
-                start,
-            )
-            .await?;
-            return Ok(());
-        }
-        rooms.route_message(player_id, client_msg).await
-    };
+    let result = state
+        .rooms
+        .lock()
+        .await
+        .route_message(player_id, client_msg)
+        .await;
 
     if let Err(e) = result {
         send_error(
