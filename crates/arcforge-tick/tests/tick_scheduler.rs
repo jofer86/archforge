@@ -261,11 +261,14 @@ async fn test_budget_utilization_under_budget() {
     });
 
     s.wait_for_tick().await;
-    // Simulate 10ms of work = 20% utilization.
-    tokio::time::advance(Duration::from_millis(10)).await;
+    // record_tick_end uses std::time::Instant (wall clock), so we need
+    // real wall-clock time to elapse for a meaningful utilization value.
+    std::thread::sleep(Duration::from_micros(50));
     s.record_tick_end();
 
-    assert!(s.metrics().budget_utilization < 1.0);
+    let util = s.metrics().budget_utilization;
+    assert!(util > 0.0, "utilization should be non-zero after real work");
+    assert!(util < 1.0, "utilization should be under budget");
 }
 
 // =========================================================================
