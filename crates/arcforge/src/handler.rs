@@ -341,18 +341,20 @@ where
         }
 
         SystemMessage::ListRooms => {
-            let rooms = state.rooms.lock().await;
-            let infos = rooms.list_rooms().await;
-            drop(rooms);
+            let handles = state.rooms.lock().await.room_handles();
 
-            let entries: Vec<RoomListEntry> = infos
-                .into_iter()
-                .map(|info| RoomListEntry {
-                    room_id: info.room_id,
-                    player_count: info.player_count,
-                    max_players: info.max_players,
-                })
-                .collect();
+            let mut entries = Vec::with_capacity(handles.len());
+            for handle in &handles {
+                if let Ok(info) = handle.get_info().await {
+                    if info.state.is_joinable() {
+                        entries.push(RoomListEntry {
+                            room_id: info.room_id,
+                            player_count: info.player_count,
+                            max_players: info.max_players,
+                        });
+                    }
+                }
+            }
 
             let resp = Envelope {
                 seq: next_seq(seq),

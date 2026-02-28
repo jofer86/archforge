@@ -176,6 +176,14 @@ impl<G: GameLogic> RoomManager<G> {
         infos
     }
 
+    /// Returns cloned handles to all active rooms.
+    ///
+    /// Useful when callers need to perform async operations on rooms
+    /// without holding the manager lock.
+    pub fn room_handles(&self) -> Vec<RoomHandle<G>> {
+        self.rooms.values().cloned().collect()
+    }
+
     /// Finds a joinable room or creates a new one, then joins the player.
     ///
     /// This is the simple matchmaking for MVP: scan existing rooms for
@@ -194,16 +202,17 @@ impl<G: GameLogic> RoomManager<G> {
             )));
         }
 
-        // Try to find a joinable room.
+        // Try to find a joinable room.  If join() fails due to a race
+        // (room filled between get_info and join), keep searching.
         for handle in self.rooms.values() {
             if let Ok(info) = handle.get_info().await {
                 if info.state.is_joinable()
                     && info.player_count < info.max_players
                 {
-                    let room_id = info.room_id;
-                    handle.join(player_id).await?;
-                    self.player_rooms.insert(player_id, room_id);
-                    return Ok(room_id);
+                    if let Ok(()) = handle.join(player_id).await {
+                        self.player_rooms.insert(player_id, info.room_id);
+                        return Ok(info.room_id);
+                    }
                 }
             }
         }
