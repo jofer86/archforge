@@ -7,6 +7,7 @@ rust-version.workspace = true
 description = "Room lifecycle management for Arcforge"
 
 [dependencies]
+arcforge-protocol = { workspace = true }
 arcforge-session = { workspace = true }
 arcforge-tick = { workspace = true }
 tokio = { workspace = true }
