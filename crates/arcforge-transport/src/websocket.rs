@@ -29,6 +29,14 @@ impl WebSocketTransport {
         tracing::info!(addr, "WebSocket transport listening");
         Ok(Self { listener })
     }
+
+    /// Returns the local address this transport is bound to.
+    ///
+    /// Useful for tests that bind to port 0 and need to discover
+    /// the OS-assigned port.
+    pub fn local_addr(&self) -> std::io::Result<std::net::SocketAddr> {
+        self.listener.local_addr()
+    }
 }
 
 impl Transport for WebSocketTransport {

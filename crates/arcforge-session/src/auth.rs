@@ -68,8 +68,8 @@ pub trait Authenticator: Send + Sync + 'static {
     /// # Returns
     /// - `Ok(PlayerId)` — authentication succeeded, here's who they are
     /// - `Err(SessionError::AuthFailed)` — token is invalid/expired
-    async fn authenticate(
+    fn authenticate(
         &self,
         token: &str,
-    ) -> Result<PlayerId, SessionError>;
+    ) -> impl std::future::Future<Output = Result<PlayerId, SessionError>> + Send;
 }
