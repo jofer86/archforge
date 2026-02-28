@@ -1,0 +1,17 @@
+[package]
+name = "arcforge-protocol"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Wire protocol, message envelopes, and codecs for Arcforge"
+
+[features]
+default = ["json"]
+json = ["serde_json"]
+
+[dependencies]
+arcforge-transport = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true, optional = true }
+thiserror = { workspace = true }
