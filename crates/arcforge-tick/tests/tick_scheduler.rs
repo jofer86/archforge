@@ -375,3 +375,146 @@ async fn test_select_loop_pattern() {
 
     assert!(ticks_fired >= 3, "expected at least 3 ticks, got {ticks_fired}");
 }
+
+// =========================================================================
+// Config validation
+// =========================================================================
+
+#[test]
+fn test_validated_clamps_tick_rate() {
+    let cfg = TickConfig { tick_rate_hz: 500, ..Default::default() }.validated();
+    assert_eq!(cfg.tick_rate_hz, TickConfig::MAX_TICK_RATE_HZ);
+}
+
+#[test]
+fn test_validated_allows_event_driven() {
+    let cfg = TickConfig { tick_rate_hz: 0, ..Default::default() }.validated();
+    assert_eq!(cfg.tick_rate_hz, 0);
+}
+
+#[test]
+fn test_validated_clamps_thresholds() {
+    let cfg = TickConfig {
+        budget_warn_threshold: -0.5,
+        budget_critical_threshold: 2.0,
+        ..Default::default()
+    }
+    .validated();
+    assert_eq!(cfg.budget_warn_threshold, 0.0);
+    assert_eq!(cfg.budget_critical_threshold, 1.0);
+}
+
+#[test]
+fn test_validated_forces_warn_le_critical() {
+    let cfg = TickConfig {
+        budget_warn_threshold: 0.9,
+        budget_critical_threshold: 0.5,
+        ..Default::default()
+    }
+    .validated();
+    assert!(cfg.budget_warn_threshold <= cfg.budget_critical_threshold);
+}
+
+// =========================================================================
+// Overrun detection
+// =========================================================================
+
+#[tokio::test(start_paused = true)]
+async fn test_skip_policy_detects_overrun_and_skips() {
+    let mut s = TickScheduler::new(TickConfig {
+        tick_rate_hz: 20, // 50ms ticks
+        initial_jitter_us: 0,
+        policy: TickPolicy::Skip,
+        ..Default::default()
+    });
+
+    // Fire tick 1 normally.
+    let info = s.wait_for_tick().await;
+    assert!(!info.overrun);
+
+    // Simulate game logic taking 150ms (3 tick budgets).
+    tokio::time::advance(Duration::from_millis(150)).await;
+    s.record_tick_end();
+
+    // Next wait_for_tick should detect the overrun.
+    let info = s.wait_for_tick().await;
+    assert!(info.overrun);
+    assert!(info.ticks_skipped > 0, "Skip policy should report skipped ticks");
+    assert!(s.metrics().total_overruns >= 1);
+    assert!(s.metrics().total_skipped > 0);
+}
+
+#[tokio::test(start_paused = true)]
+async fn test_catchup_policy_detects_overrun() {
+    let mut s = TickScheduler::new(TickConfig {
+        tick_rate_hz: 20,
+        initial_jitter_us: 0,
+        policy: TickPolicy::CatchUp { max_catchup: 2 },
+        ..Default::default()
+    });
+
+    let info = s.wait_for_tick().await;
+    assert!(!info.overrun);
+
+    // Simulate 150ms overrun (3 ticks behind).
+    tokio::time::advance(Duration::from_millis(150)).await;
+    s.record_tick_end();
+
+    let info = s.wait_for_tick().await;
+    assert!(info.overrun);
+    assert!(s.metrics().total_overruns >= 1);
+}
+
+#[tokio::test(start_paused = true)]
+async fn test_drop_policy_detects_overrun_keeps_cadence() {
+    let mut s = TickScheduler::new(TickConfig {
+        tick_rate_hz: 20,
+        initial_jitter_us: 0,
+        policy: TickPolicy::Drop,
+        ..Default::default()
+    });
+
+    let info = s.wait_for_tick().await;
+    assert!(!info.overrun);
+
+    // Simulate 150ms overrun.
+    tokio::time::advance(Duration::from_millis(150)).await;
+    s.record_tick_end();
+
+    let info = s.wait_for_tick().await;
+    assert!(info.overrun);
+    // Drop policy reports 0 skipped — it doesn't skip, it drops the overrun.
+    assert_eq!(info.ticks_skipped, 0);
+    assert!(s.metrics().total_overruns >= 1);
+}
+
+// =========================================================================
+// Resume after long pause (no burst of catch-up ticks)
+// =========================================================================
+
+#[tokio::test(start_paused = true)]
+async fn test_resume_after_long_pause_no_burst() {
+    let mut s = TickScheduler::new(TickConfig {
+        tick_rate_hz: 20, // 50ms ticks
+        initial_jitter_us: 0,
+        policy: TickPolicy::Skip,
+        ..Default::default()
+    });
+
+    // Fire one tick.
+    s.wait_for_tick().await;
+    s.record_tick_end();
+    assert_eq!(s.tick_count(), 1);
+
+    // Pause, then advance time by 2 seconds (40 tick budgets).
+    s.pause();
+    tokio::time::advance(Duration::from_secs(2)).await;
+    s.resume();
+
+    // The next tick should fire cleanly — no overrun, no skipped ticks.
+    // resume() resets next_tick to now + tick_duration.
+    let info = s.wait_for_tick().await;
+    assert_eq!(info.tick, 2);
+    assert!(!info.overrun, "resume should not cause overrun");
+    assert_eq!(info.ticks_skipped, 0, "resume should not cause skipped ticks");
+}

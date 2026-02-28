@@ -211,7 +211,7 @@ impl<G: GameLogic> RoomManager<G> {
                 if info.state.is_joinable()
                     && info.player_count < info.max_players
                 {
-                    if let Ok(()) = handle.join(player_id, sender).await {
+                    if let Ok(()) = handle.join(player_id, sender.clone()).await {
                         self.player_rooms.insert(player_id, info.room_id);
                         return Ok(info.room_id);
                     }

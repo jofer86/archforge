@@ -83,10 +83,18 @@ pub struct RoomInfo {
 ///
 /// This is cheap to clone — it's just an `mpsc::Sender` wrapper.
 /// The `RoomManager` holds one of these per room.
-#[derive(Clone)]
 pub struct RoomHandle<G: GameLogic> {
     room_id: RoomId,
     sender: mpsc::Sender<RoomCommand<G>>,
+}
+
+impl<G: GameLogic> Clone for RoomHandle<G> {
+    fn clone(&self) -> Self {
+        Self {
+            room_id: self.room_id,
+            sender: self.sender.clone(),
+        }
+    }
 }
 
 impl<G: GameLogic> RoomHandle<G> {

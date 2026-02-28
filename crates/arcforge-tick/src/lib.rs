@@ -27,6 +27,7 @@
 
 use std::time::{Duration, Instant};
 
+use rand::Rng;
 use tokio::time::{self, Instant as TokioInstant};
 use tracing::{debug, trace, warn};
 
@@ -94,12 +95,38 @@ impl Default for TickConfig {
 }
 
 impl TickConfig {
+    /// Maximum supported tick rate.
+    pub const MAX_TICK_RATE_HZ: u32 = 128;
+
     /// Create a config for a specific tick rate with sensible defaults.
     pub fn with_rate(tick_rate_hz: u32) -> Self {
         Self {
             tick_rate_hz,
             ..Default::default()
         }
+    }
+
+    /// Clamp and fix any out-of-range values so the config is safe to use.
+    ///
+    /// Called automatically by [`TickScheduler::new`]. Rules:
+    /// - `tick_rate_hz` capped to [`Self::MAX_TICK_RATE_HZ`] (0 is allowed for event-driven).
+    /// - Thresholds clamped to `0.0..=1.0`.
+    /// - `budget_warn_threshold` forced ≤ `budget_critical_threshold`.
+    pub fn validated(mut self) -> Self {
+        if self.tick_rate_hz > Self::MAX_TICK_RATE_HZ {
+            warn!(
+                rate = self.tick_rate_hz,
+                max = Self::MAX_TICK_RATE_HZ,
+                "tick_rate_hz exceeds maximum — clamping"
+            );
+            self.tick_rate_hz = Self::MAX_TICK_RATE_HZ;
+        }
+        self.budget_warn_threshold = self.budget_warn_threshold.clamp(0.0, 1.0);
+        self.budget_critical_threshold = self.budget_critical_threshold.clamp(0.0, 1.0);
+        if self.budget_warn_threshold > self.budget_critical_threshold {
+            self.budget_warn_threshold = self.budget_critical_threshold;
+        }
+        self
     }
 
     /// Duration of a single tick. Returns `None` for event-driven mode.
@@ -195,14 +222,14 @@ impl TickScheduler {
     /// The first tick is scheduled with optional jitter to prevent
     /// thundering-herd synchronization across rooms.
     pub fn new(config: TickConfig) -> Self {
+        let config = config.validated();
         let tick_duration = config.tick_duration();
 
         // Schedule first tick with jitter to desynchronize rooms.
         let next_tick = tick_duration.map(|d| {
             let jitter = if config.initial_jitter_us > 0 {
-                // Simple deterministic-ish jitter from current time nanos.
-                let nanos = Instant::now().elapsed().subsec_nanos() as u64;
-                Duration::from_micros(nanos % config.initial_jitter_us)
+                let us = rand::rng().random_range(0..config.initial_jitter_us);
+                Duration::from_micros(us)
             } else {
                 Duration::ZERO
             };
