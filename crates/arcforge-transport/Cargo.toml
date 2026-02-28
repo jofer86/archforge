@@ -1,0 +1,23 @@
+[package]
+name = "arcforge-transport"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Transport abstraction and implementations for Arcforge"
+
+[features]
+default = ["websocket"]
+websocket = ["tokio-tungstenite", "futures-util"]
+
+[dependencies]
+tokio = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+tokio-tungstenite = { workspace = true, optional = true }
+futures-util = { workspace = true, optional = true }
+
+[dev-dependencies]
+tokio = { workspace = true }
+tokio-tungstenite = { workspace = true }
+futures-util = { workspace = true }
