@@ -60,7 +60,12 @@ where
 
     tracing::info!(%conn_id, %player_id, "player authenticated");
 
-    // Guard ensures session cleanup even on panic.
+    // Create session and guard atomically — if session creation fails,
+    // no guard is needed. If it succeeds, the guard is immediately active.
+    {
+        let mut sessions = state.sessions.lock().await;
+        sessions.create(player_id).map_err(ArcforgeError::Session)?;
+    }
     let _guard = SessionGuard {
         player_id,
         state: Arc::clone(&state),
@@ -206,11 +211,6 @@ where
             return Err(ArcforgeError::Session(e));
         }
     };
-
-    {
-        let mut sessions = state.sessions.lock().await;
-        sessions.create(player_id).map_err(ArcforgeError::Session)?;
-    }
 
     let ack = Envelope {
         seq: 0,
