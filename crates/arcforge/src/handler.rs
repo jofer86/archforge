@@ -14,9 +14,10 @@ use arcforge_protocol::{
     Codec, Channel, Envelope, Payload, PlayerId, RoomListEntry,
     SystemMessage,
 };
-use arcforge_room::GameLogic;
+use arcforge_room::{GameLogic, RoomOutbound};
 use arcforge_session::Authenticator;
 use arcforge_transport::{Connection, WebSocketConnection};
+use tokio::sync::mpsc;
 
 use crate::server::{ServerState, PROTOCOL_VERSION};
 use crate::ArcforgeError;
@@ -75,54 +76,96 @@ where
     // --- Step 2: Message loop ---
     let mut seq: u64 = 1;
     let start = Instant::now();
+    // Room outbound receiver — set when the player joins a room.
+    let mut room_rx: Option<mpsc::UnboundedReceiver<RoomOutbound<G>>> =
+        None;
 
     loop {
-        let data = match tokio::time::timeout(
-            Duration::from_secs(15),
-            conn.recv(),
-        )
-        .await
-        {
-            Ok(Ok(Some(data))) => data,
-            Ok(Ok(None)) => {
-                tracing::info!(%player_id, "connection closed cleanly");
-                break;
-            }
-            Ok(Err(e)) => {
-                tracing::debug!(%player_id, error = %e, "recv error");
-                break;
-            }
-            Err(_) => {
-                tracing::info!(%player_id, "connection timed out");
-                break;
-            }
-        };
+        tokio::select! {
+            // Inbound: data from the client WebSocket.
+            ws_result = async {
+                tokio::time::timeout(Duration::from_secs(15), conn.recv()).await
+            } => {
+                let data = match ws_result {
+                    Ok(Ok(Some(data))) => data,
+                    Ok(Ok(None)) => {
+                        tracing::info!(%player_id, "connection closed cleanly");
+                        break;
+                    }
+                    Ok(Err(e)) => {
+                        tracing::debug!(%player_id, error = %e, "recv error");
+                        break;
+                    }
+                    Err(_) => {
+                        tracing::info!(%player_id, "connection timed out");
+                        break;
+                    }
+                };
 
-        let envelope: Envelope = match state.codec.decode(&data) {
-            Ok(env) => env,
-            Err(e) => {
-                tracing::debug!(
-                    %player_id, error = %e, "failed to decode envelope"
-                );
-                continue;
-            }
-        };
+                let envelope: Envelope = match state.codec.decode(&data) {
+                    Ok(env) => env,
+                    Err(e) => {
+                        tracing::debug!(
+                            %player_id, error = %e, "failed to decode envelope"
+                        );
+                        continue;
+                    }
+                };
 
-        match envelope.payload {
-            Payload::System(sys_msg) => {
-                let should_close = handle_system_message(
-                    &conn, &state, player_id, sys_msg, &mut seq, &start,
-                )
-                .await?;
-                if should_close {
-                    break;
+                match envelope.payload {
+                    Payload::System(sys_msg) => {
+                        let should_close = handle_system_message(
+                            &conn, &state, player_id, sys_msg,
+                            &mut seq, &start, &mut room_rx,
+                        )
+                        .await?;
+                        if should_close {
+                            break;
+                        }
+                    }
+                    Payload::Game(game_data) => {
+                        handle_game_message::<G, A, C>(
+                            &conn, &state, player_id, game_data,
+                            &mut seq, &start,
+                        )
+                        .await?;
+                    }
                 }
             }
-            Payload::Game(game_data) => {
-                handle_game_message::<G, A, C>(
-                    &conn, &state, player_id, game_data, &mut seq, &start,
-                )
-                .await?;
+
+            // Outbound: messages from the room actor to this player.
+            Some(outbound) = async {
+                match room_rx.as_mut() {
+                    Some(rx) => rx.recv().await,
+                    None => std::future::pending().await,
+                }
+            } => {
+                let envelope = match outbound {
+                    RoomOutbound::State(game_state) => {
+                        let data = state.codec.encode(&game_state)?;
+                        Envelope {
+                            seq: next_seq(&mut seq),
+                            timestamp: start.elapsed().as_millis() as u64,
+                            channel: Channel::ReliableOrdered,
+                            payload: Payload::System(
+                                SystemMessage::RoomState { data },
+                            ),
+                        }
+                    }
+                    RoomOutbound::Message(msg) => {
+                        let data = state.codec.encode(&msg)?;
+                        Envelope {
+                            seq: next_seq(&mut seq),
+                            timestamp: start.elapsed().as_millis() as u64,
+                            channel: Channel::ReliableOrdered,
+                            payload: Payload::Game(data),
+                        }
+                    }
+                };
+                let bytes = state.codec.encode(&envelope)?;
+                conn.send(&bytes)
+                    .await
+                    .map_err(ArcforgeError::Transport)?;
             }
         }
     }
@@ -236,6 +279,7 @@ async fn handle_system_message<G, A, C>(
     msg: SystemMessage,
     seq: &mut u64,
     start: &Instant,
+    room_rx: &mut Option<mpsc::UnboundedReceiver<RoomOutbound<G>>>,
 ) -> Result<bool, ArcforgeError>
 where
     G: GameLogic,
@@ -258,14 +302,15 @@ where
         }
 
         SystemMessage::JoinRoom { room_id } => {
-            // Lock only for the join operation, drop before network I/O.
+            let (tx, rx) = mpsc::unbounded_channel();
             let join_result = {
                 let mut rooms = state.rooms.lock().await;
-                rooms.join_room(player_id, room_id).await
+                rooms.join_room(player_id, room_id, tx).await
             };
 
             match join_result {
                 Ok(()) => {
+                    *room_rx = Some(rx);
                     let resp = Envelope {
                         seq: next_seq(seq),
                         timestamp: start.elapsed().as_millis() as u64,
@@ -300,15 +345,17 @@ where
         SystemMessage::JoinOrCreate { .. } => {
             // MVP: `name` and `options` are ignored — single game type,
             // default config. Phase 2 will use these for multi-game servers.
+            let (tx, rx) = mpsc::unbounded_channel();
             let result = {
                 let mut rooms = state.rooms.lock().await;
                 rooms
-                    .join_or_create(player_id, G::Config::default())
+                    .join_or_create(player_id, G::Config::default(), tx)
                     .await
             };
 
             match result {
                 Ok(room_id) => {
+                    *room_rx = Some(rx);
                     let resp = Envelope {
                         seq: next_seq(seq),
                         timestamp: start.elapsed().as_millis() as u64,
@@ -377,6 +424,7 @@ where
                     %player_id, error = %e, "leave room failed"
                 );
             }
+            *room_rx = None;
         }
 
         SystemMessage::Disconnect { reason } => {

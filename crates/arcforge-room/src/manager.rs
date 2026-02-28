@@ -5,7 +5,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use arcforge_protocol::{PlayerId, RoomId};
 
-use crate::{GameLogic, RoomError, RoomHandle, RoomInfo};
+use crate::{GameLogic, PlayerSender, RoomError, RoomHandle, RoomInfo};
 use crate::room::spawn_room;
 
 /// Counter for generating unique room IDs.
@@ -59,6 +59,7 @@ impl<G: GameLogic> RoomManager<G> {
         &mut self,
         player_id: PlayerId,
         room_id: RoomId,
+        sender: PlayerSender<G>,
     ) -> Result<(), RoomError> {
         if let Some(current) = self.player_rooms.get(&player_id) {
             if *current == room_id {
@@ -75,7 +76,7 @@ impl<G: GameLogic> RoomManager<G> {
             .get(&room_id)
             .ok_or(RoomError::NotFound(room_id))?;
 
-        handle.join(player_id).await?;
+        handle.join(player_id, sender).await?;
         self.player_rooms.insert(player_id, room_id);
         Ok(())
     }
@@ -193,6 +194,7 @@ impl<G: GameLogic> RoomManager<G> {
         &mut self,
         player_id: PlayerId,
         game_config: G::Config,
+        sender: PlayerSender<G>,
     ) -> Result<RoomId, RoomError> {
         // Check if player is already in a room.
         if let Some(existing) = self.player_rooms.get(&player_id) {
@@ -209,7 +211,7 @@ impl<G: GameLogic> RoomManager<G> {
                 if info.state.is_joinable()
                     && info.player_count < info.max_players
                 {
-                    if let Ok(()) = handle.join(player_id).await {
+                    if let Ok(()) = handle.join(player_id, sender).await {
                         self.player_rooms.insert(player_id, info.room_id);
                         return Ok(info.room_id);
                     }
@@ -223,7 +225,7 @@ impl<G: GameLogic> RoomManager<G> {
             .rooms
             .get(&room_id)
             .expect("just created this room");
-        handle.join(player_id).await?;
+        handle.join(player_id, sender).await?;
         self.player_rooms.insert(player_id, room_id);
         Ok(room_id)
     }

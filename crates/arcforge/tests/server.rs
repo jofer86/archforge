@@ -548,3 +548,122 @@ async fn test_list_rooms_after_join_or_create() {
         other => panic!("expected RoomList, got {other:?}"),
     }
 }
+
+#[tokio::test]
+async fn test_join_or_create_receives_state_on_game_start() {
+    let addr = start_server().await;
+
+    // Player 1 joins.
+    let mut ws1 = connect(&addr).await;
+    handshake(&mut ws1, 1).await;
+    let joc = Envelope {
+        seq: 1,
+        timestamp: 0,
+        channel: Channel::ReliableOrdered,
+        payload: Payload::System(SystemMessage::JoinOrCreate {
+            name: "test".into(),
+            options: vec![],
+        }),
+    };
+    ws1.send(encode_envelope(&joc)).await.expect("send");
+    let _ = ws1.next().await.unwrap().expect("recv RoomJoined");
+
+    // Player 2 joins the same room — game starts (min_players=2).
+    let mut ws2 = connect(&addr).await;
+    handshake(&mut ws2, 2).await;
+    ws2.send(encode_envelope(&joc)).await.expect("send");
+    let _ = ws2.next().await.unwrap().expect("recv RoomJoined");
+
+    // Both players should receive a RoomState message.
+    let msg1 = tokio::time::timeout(Duration::from_secs(2), ws1.next())
+        .await
+        .expect("timeout")
+        .unwrap()
+        .expect("recv");
+    let env1 = decode_envelope(msg1);
+    assert!(
+        matches!(env1.payload, Payload::System(SystemMessage::RoomState { .. })),
+        "expected RoomState, got {:?}",
+        env1.payload
+    );
+
+    let msg2 = tokio::time::timeout(Duration::from_secs(2), ws2.next())
+        .await
+        .expect("timeout")
+        .unwrap()
+        .expect("recv");
+    let env2 = decode_envelope(msg2);
+    assert!(
+        matches!(env2.payload, Payload::System(SystemMessage::RoomState { .. })),
+        "expected RoomState, got {:?}",
+        env2.payload
+    );
+}
+
+#[tokio::test]
+async fn test_game_message_broadcast_end_to_end() {
+    let addr = start_server().await;
+
+    let mut ws1 = connect(&addr).await;
+    let mut ws2 = connect(&addr).await;
+    handshake(&mut ws1, 1).await;
+    handshake(&mut ws2, 2).await;
+
+    let joc = Envelope {
+        seq: 1,
+        timestamp: 0,
+        channel: Channel::ReliableOrdered,
+        payload: Payload::System(SystemMessage::JoinOrCreate {
+            name: "test".into(),
+            options: vec![],
+        }),
+    };
+
+    // Both join → game starts.
+    ws1.send(encode_envelope(&joc)).await.expect("send");
+    let _ = ws1.next().await; // RoomJoined
+    ws2.send(encode_envelope(&joc)).await.expect("send");
+    let _ = ws2.next().await; // RoomJoined
+
+    // Drain RoomState messages.
+    let _ = tokio::time::timeout(Duration::from_millis(100), ws1.next()).await;
+    let _ = tokio::time::timeout(Duration::from_millis(100), ws2.next()).await;
+
+    // Player 1 sends a game message.
+    let game_data = serde_json::to_vec(&EchoMsg {
+        text: "hello".into(),
+    })
+    .unwrap();
+    let game_env = Envelope {
+        seq: 2,
+        timestamp: 0,
+        channel: Channel::ReliableOrdered,
+        payload: Payload::Game(game_data),
+    };
+    ws1.send(encode_envelope(&game_env)).await.expect("send");
+
+    // Both players should receive the broadcast game message.
+    let msg1 = tokio::time::timeout(Duration::from_secs(2), ws1.next())
+        .await
+        .expect("timeout")
+        .unwrap()
+        .expect("recv");
+    let env1 = decode_envelope(msg1);
+    assert!(
+        matches!(env1.payload, Payload::Game(_)),
+        "expected Game payload, got {:?}",
+        env1.payload
+    );
+
+    let msg2 = tokio::time::timeout(Duration::from_secs(2), ws2.next())
+        .await
+        .expect("timeout")
+        .unwrap()
+        .expect("recv");
+    let env2 = decode_envelope(msg2);
+    assert!(
+        matches!(env2.payload, Payload::Game(_)),
+        "expected Game payload, got {:?}",
+        env2.payload
+    );
+}

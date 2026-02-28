@@ -23,4 +23,4 @@ pub use config::{RoomConfig, RoomState};
 pub use error::RoomError;
 pub use logic::GameLogic;
 pub use manager::RoomManager;
-pub use room::{RoomHandle, RoomInfo};
+pub use room::{RoomHandle, RoomInfo, RoomOutbound, PlayerSender};
