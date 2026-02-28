@@ -11,6 +11,27 @@ use tokio::sync::{mpsc, oneshot};
 
 use crate::{GameLogic, RoomConfig, RoomError, RoomState};
 
+/// An outbound message from the room actor to a player's connection handler.
+#[derive(Debug)]
+pub enum RoomOutbound<G: GameLogic> {
+    /// Full game state snapshot (sent on join).
+    State(G::State),
+    /// A game message from the game logic.
+    Message(G::ServerMessage),
+}
+
+impl<G: GameLogic> Clone for RoomOutbound<G> {
+    fn clone(&self) -> Self {
+        match self {
+            Self::State(s) => Self::State(s.clone()),
+            Self::Message(m) => Self::Message(m.clone()),
+        }
+    }
+}
+
+/// Channel sender for delivering outbound messages to a player.
+pub type PlayerSender<G> = mpsc::UnboundedSender<RoomOutbound<G>>;
+
 /// Commands sent to a room actor through its channel.
 ///
 /// Each variant represents an operation the outside world can request.
@@ -20,6 +41,7 @@ pub(crate) enum RoomCommand<G: GameLogic> {
     /// Add a player to the room.
     Join {
         player_id: PlayerId,
+        sender: PlayerSender<G>,
         reply: oneshot::Sender<Result<(), RoomError>>,
     },
 
@@ -77,11 +99,13 @@ impl<G: GameLogic> RoomHandle<G> {
     pub async fn join(
         &self,
         player_id: PlayerId,
+        sender: PlayerSender<G>,
     ) -> Result<(), RoomError> {
         let (reply_tx, reply_rx) = oneshot::channel();
         self.sender
             .send(RoomCommand::Join {
                 player_id,
+                sender,
                 reply: reply_tx,
             })
             .await
@@ -148,11 +172,11 @@ struct RoomActor<G: GameLogic> {
     state: RoomState,
     config: RoomConfig,
     players: HashSet<PlayerId>,
+    /// Per-player outbound channels.
+    senders: std::collections::HashMap<PlayerId, PlayerSender<G>>,
     game_state: Option<G::State>,
     game_config: G::Config,
     receiver: mpsc::Receiver<RoomCommand<G>>,
-    /// Collects outbound messages. Higher layers will drain this.
-    outbox: Vec<(Recipient, G::ServerMessage)>,
 }
 
 impl<G: GameLogic> RoomActor<G> {
@@ -162,18 +186,20 @@ impl<G: GameLogic> RoomActor<G> {
 
         while let Some(cmd) = self.receiver.recv().await {
             match cmd {
-                RoomCommand::Join { player_id, reply } => {
-                    let result = self.handle_join(player_id);
+                RoomCommand::Join {
+                    player_id,
+                    sender,
+                    reply,
+                } => {
+                    let result = self.handle_join(player_id, sender);
                     let _ = reply.send(result);
                 }
                 RoomCommand::Leave { player_id, reply } => {
                     let result = self.handle_leave(player_id);
-                    self.outbox.clear();
                     let _ = reply.send(result);
                 }
                 RoomCommand::Message { sender, msg } => {
                     self.handle_message(sender, msg);
-                    self.outbox.clear();
                 }
                 RoomCommand::GetState { reply } => {
                     let _ = reply.send(self.info());
@@ -192,6 +218,7 @@ impl<G: GameLogic> RoomActor<G> {
     fn handle_join(
         &mut self,
         player_id: PlayerId,
+        sender: PlayerSender<G>,
     ) -> Result<(), RoomError> {
         if !self.state.is_joinable() {
             return Err(RoomError::InvalidState(format!(
@@ -210,6 +237,7 @@ impl<G: GameLogic> RoomActor<G> {
         }
 
         self.players.insert(player_id);
+        self.senders.insert(player_id, sender);
         tracing::info!(
             room_id = %self.room_id,
             %player_id,
@@ -222,6 +250,10 @@ impl<G: GameLogic> RoomActor<G> {
             self.transition_to_starting();
         }
 
+        // NOTE: State snapshot on join is handled by transition_to_starting
+        // (broadcasts to all players). For late-join/reconnection into an
+        // already-running game (Phase 2), add a snapshot send here.
+
         Ok(())
     }
 
@@ -232,6 +264,7 @@ impl<G: GameLogic> RoomActor<G> {
         if !self.players.remove(&player_id) {
             return Err(RoomError::NotInRoom(player_id, self.room_id));
         }
+        self.senders.remove(&player_id);
 
         tracing::info!(
             room_id = %self.room_id,
@@ -245,7 +278,12 @@ impl<G: GameLogic> RoomActor<G> {
             if let Some(game_state) = &mut self.game_state {
                 let msgs =
                     G::on_player_disconnect(game_state, player_id);
-                self.outbox.extend(msgs);
+                let finished = G::is_finished(game_state);
+                self.dispatch(msgs);
+                if finished {
+                    self.state = RoomState::Finished;
+                    tracing::info!(room_id = %self.room_id, "game finished");
+                }
             }
         }
 
@@ -268,14 +306,9 @@ impl<G: GameLogic> RoomActor<G> {
 
         let game_state = match &mut self.game_state {
             Some(s) => s,
-            None => return, // game not started yet
+            None => return,
         };
 
-        // Validate before processing.
-        // TODO(epic-5): Send validation errors back to the client as
-        // SystemMessage::Error. Currently dropped silently because the
-        // room actor works with G::ServerMessage, not SystemMessage.
-        // The integration layer (Epic 5) will bridge this gap.
         if let Err(reason) = G::validate_message(game_state, sender, &msg)
         {
             tracing::debug!(
@@ -288,10 +321,12 @@ impl<G: GameLogic> RoomActor<G> {
         }
 
         let msgs = G::handle_message(game_state, sender, msg);
-        self.outbox.extend(msgs);
+        let finished = G::is_finished(game_state);
 
-        // Check if game is finished.
-        if G::is_finished(game_state) {
+        // Dispatch after releasing the mutable borrow on game_state.
+        self.dispatch(msgs);
+
+        if finished {
             self.state = RoomState::Finished;
             tracing::info!(room_id = %self.room_id, "game finished");
         }
@@ -308,6 +343,46 @@ impl<G: GameLogic> RoomActor<G> {
             players = players.len(),
             "game started"
         );
+
+        // Broadcast initial state to all players.
+        if let Some(game_state) = &self.game_state {
+            let msg = RoomOutbound::State(game_state.clone());
+            for pid in &self.players {
+                self.send_to(*pid, msg.clone());
+            }
+        }
+    }
+
+    /// Dispatches outbound messages to the correct recipients.
+    fn dispatch(&self, msgs: Vec<(Recipient, G::ServerMessage)>) {
+        for (recipient, msg) in msgs {
+            let outbound = RoomOutbound::Message(msg);
+            match recipient {
+                Recipient::All => {
+                    for pid in &self.players {
+                        self.send_to(*pid, outbound.clone());
+                    }
+                }
+                Recipient::Player(pid) => {
+                    self.send_to(pid, outbound);
+                }
+                Recipient::AllExcept(excluded) => {
+                    for pid in &self.players {
+                        if *pid != excluded {
+                            self.send_to(*pid, outbound.clone());
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Sends an outbound message to a single player. Silently drops
+    /// if the receiver is gone (player disconnected).
+    fn send_to(&self, player_id: PlayerId, msg: RoomOutbound<G>) {
+        if let Some(sender) = self.senders.get(&player_id) {
+            let _ = sender.send(msg);
+        }
     }
 
     fn info(&self) -> RoomInfo {
@@ -337,10 +412,10 @@ pub(crate) fn spawn_room<G: GameLogic>(
         state: RoomState::WaitingForPlayers,
         config,
         players: HashSet::new(),
+        senders: std::collections::HashMap::new(),
         game_state: None,
         game_config,
         receiver: rx,
-        outbox: Vec::new(),
     };
 
     tokio::spawn(actor.run());

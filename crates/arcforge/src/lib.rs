@@ -57,8 +57,8 @@ pub mod prelude {
 
     // Room types
     pub use arcforge_room::{
-        GameLogic, RoomConfig, RoomError, RoomHandle, RoomInfo,
-        RoomManager, RoomState,
+        GameLogic, PlayerSender, RoomConfig, RoomError, RoomHandle,
+        RoomInfo, RoomManager, RoomOutbound, RoomState,
     };
 
     // Transport types

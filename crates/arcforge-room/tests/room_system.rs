@@ -3,21 +3,23 @@
 use std::time::Duration;
 
 use arcforge_protocol::{PlayerId, Recipient};
-use arcforge_room::{GameLogic, RoomConfig, RoomManager, RoomState};
+use arcforge_room::{GameLogic, PlayerSender, RoomConfig, RoomManager, RoomState};
 use serde::{Deserialize, Serialize};
+use tokio::sync::mpsc;
 
 // =========================================================================
 // Mock game: a simple counter that finishes at a target value.
 // =========================================================================
 
+#[derive(Debug)]
 struct CounterGame;
 
-#[derive(Clone, Default)]
+#[derive(Clone, Debug, Default)]
 struct CounterConfig {
     finish_at: u32,
 }
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 struct CounterState {
     count: u32,
     target: u32,
@@ -114,6 +116,11 @@ fn pid(id: u64) -> PlayerId {
     PlayerId(id)
 }
 
+/// Creates a dummy player sender (receiver is dropped immediately).
+fn dummy_sender<G: GameLogic>() -> PlayerSender<G> {
+    mpsc::unbounded_channel().0
+}
+
 // =========================================================================
 // RoomManager tests
 // =========================================================================
@@ -132,7 +139,7 @@ async fn test_join_room_success() {
     let mut mgr = RoomManager::<CounterGame>::new();
     let room = mgr.create_room(CounterConfig::default());
 
-    mgr.join_room(pid(1), room).await.unwrap();
+    mgr.join_room(pid(1), room, dummy_sender()).await.unwrap();
 
     assert_eq!(mgr.player_room(&pid(1)), Some(room));
 }
@@ -140,7 +147,7 @@ async fn test_join_room_success() {
 #[tokio::test]
 async fn test_join_room_not_found() {
     let mut mgr = RoomManager::<CounterGame>::new();
-    let result = mgr.join_room(pid(1), arcforge_protocol::RoomId(999)).await;
+    let result = mgr.join_room(pid(1), arcforge_protocol::RoomId(999), dummy_sender()).await;
     assert!(result.is_err());
 }
 
@@ -150,8 +157,8 @@ async fn test_join_room_one_room_at_a_time() {
     let r1 = mgr.create_room(CounterConfig::default());
     let r2 = mgr.create_room(CounterConfig::default());
 
-    mgr.join_room(pid(1), r1).await.unwrap();
-    let result = mgr.join_room(pid(1), r2).await;
+    mgr.join_room(pid(1), r1, dummy_sender()).await.unwrap();
+    let result = mgr.join_room(pid(1), r2, dummy_sender()).await;
     assert!(result.is_err(), "player should not join two rooms");
 }
 
@@ -160,8 +167,8 @@ async fn test_join_room_already_in_same_room() {
     let mut mgr = RoomManager::<CounterGame>::new();
     let room = mgr.create_room(CounterConfig::default());
 
-    mgr.join_room(pid(1), room).await.unwrap();
-    let result = mgr.join_room(pid(1), room).await;
+    mgr.join_room(pid(1), room, dummy_sender()).await.unwrap();
+    let result = mgr.join_room(pid(1), room, dummy_sender()).await;
     assert!(result.is_err());
 }
 
@@ -172,11 +179,11 @@ async fn test_join_room_full() {
 
     // min_players is 2, max is 4. After 2 join, game auto-starts
     // and no more joins are allowed (room is InProgress).
-    mgr.join_room(pid(1), room).await.unwrap();
-    mgr.join_room(pid(2), room).await.unwrap();
+    mgr.join_room(pid(1), room, dummy_sender()).await.unwrap();
+    mgr.join_room(pid(2), room, dummy_sender()).await.unwrap();
 
     // 3rd player can't join — game already started
-    let result = mgr.join_room(pid(3), room).await;
+    let result = mgr.join_room(pid(3), room, dummy_sender()).await;
     assert!(result.is_err(), "should not join a running game");
 }
 
@@ -188,10 +195,10 @@ async fn test_join_room_at_max_capacity() {
     let room = mgr.create_room(CounterConfig::default());
 
     for i in 1..=4 {
-        mgr.join_room(pid(i), room).await.unwrap();
+        mgr.join_room(pid(i), room, dummy_sender()).await.unwrap();
     }
     // Room is now full AND game started
-    let result = mgr.join_room(pid(5), room).await;
+    let result = mgr.join_room(pid(5), room, dummy_sender()).await;
     assert!(result.is_err(), "room should reject 5th player");
 }
 
@@ -199,7 +206,7 @@ async fn test_join_room_at_max_capacity() {
 async fn test_leave_room_success() {
     let mut mgr = RoomManager::<CounterGame>::new();
     let room = mgr.create_room(CounterConfig::default());
-    mgr.join_room(pid(1), room).await.unwrap();
+    mgr.join_room(pid(1), room, dummy_sender()).await.unwrap();
 
     mgr.leave_room(pid(1)).await.unwrap();
 
@@ -217,7 +224,7 @@ async fn test_leave_room_not_in_any_room() {
 async fn test_get_room_info() {
     let mut mgr = RoomManager::<CounterGame>::new();
     let room = mgr.create_room(CounterConfig::default());
-    mgr.join_room(pid(1), room).await.unwrap();
+    mgr.join_room(pid(1), room, dummy_sender()).await.unwrap();
 
     let info = mgr.get_room_info(room).await.unwrap();
 
@@ -232,12 +239,12 @@ async fn test_auto_start_when_min_players_reached() {
     let mut mgr = RoomManager::<CounterGame>::new();
     let room = mgr.create_room(CounterConfig::default());
 
-    mgr.join_room(pid(1), room).await.unwrap();
+    mgr.join_room(pid(1), room, dummy_sender()).await.unwrap();
     let info = mgr.get_room_info(room).await.unwrap();
     assert_eq!(info.state, RoomState::WaitingForPlayers);
 
     // min_players is 2 — joining second player should auto-start
-    mgr.join_room(pid(2), room).await.unwrap();
+    mgr.join_room(pid(2), room, dummy_sender()).await.unwrap();
     let info = mgr.get_room_info(room).await.unwrap();
     assert_eq!(info.state, RoomState::InProgress);
 }
@@ -246,11 +253,11 @@ async fn test_auto_start_when_min_players_reached() {
 async fn test_cannot_join_after_game_started() {
     let mut mgr = RoomManager::<CounterGame>::new();
     let room = mgr.create_room(CounterConfig::default());
-    mgr.join_room(pid(1), room).await.unwrap();
-    mgr.join_room(pid(2), room).await.unwrap();
+    mgr.join_room(pid(1), room, dummy_sender()).await.unwrap();
+    mgr.join_room(pid(2), room, dummy_sender()).await.unwrap();
     // Game is now InProgress
 
-    let result = mgr.join_room(pid(3), room).await;
+    let result = mgr.join_room(pid(3), room, dummy_sender()).await;
     assert!(result.is_err(), "should not join a running game");
 }
 
@@ -258,8 +265,8 @@ async fn test_cannot_join_after_game_started() {
 async fn test_route_message() {
     let mut mgr = RoomManager::<CounterGame>::new();
     let room = mgr.create_room(CounterConfig { finish_at: 100 });
-    mgr.join_room(pid(1), room).await.unwrap();
-    mgr.join_room(pid(2), room).await.unwrap();
+    mgr.join_room(pid(1), room, dummy_sender()).await.unwrap();
+    mgr.join_room(pid(2), room, dummy_sender()).await.unwrap();
 
     // Game is InProgress, send a message
     mgr.route_message(pid(1), Increment).await.unwrap();
@@ -282,7 +289,7 @@ async fn test_route_message_not_in_room() {
 async fn test_destroy_room() {
     let mut mgr = RoomManager::<CounterGame>::new();
     let room = mgr.create_room(CounterConfig::default());
-    mgr.join_room(pid(1), room).await.unwrap();
+    mgr.join_room(pid(1), room, dummy_sender()).await.unwrap();
 
     mgr.destroy_room(room).await.unwrap();
 
@@ -314,8 +321,8 @@ async fn test_room_ids() {
 async fn test_game_finishes_on_target() {
     let mut mgr = RoomManager::<CounterGame>::new();
     let room = mgr.create_room(CounterConfig { finish_at: 2 });
-    mgr.join_room(pid(1), room).await.unwrap();
-    mgr.join_room(pid(2), room).await.unwrap();
+    mgr.join_room(pid(1), room, dummy_sender()).await.unwrap();
+    mgr.join_room(pid(2), room, dummy_sender()).await.unwrap();
 
     // Send 2 increments to reach the target
     mgr.route_message(pid(1), Increment).await.unwrap();
@@ -341,8 +348,8 @@ async fn test_list_rooms_returns_joinable_only() {
     let r2 = mgr.create_room(CounterConfig::default());
 
     // r2 gets filled → starts → no longer joinable
-    mgr.join_room(pid(10), r2).await.unwrap();
-    mgr.join_room(pid(11), r2).await.unwrap();
+    mgr.join_room(pid(10), r2, dummy_sender()).await.unwrap();
+    mgr.join_room(pid(11), r2, dummy_sender()).await.unwrap();
     tokio::time::sleep(Duration::from_millis(10)).await;
 
     let rooms = mgr.list_rooms().await;
@@ -354,7 +361,7 @@ async fn test_list_rooms_returns_joinable_only() {
 async fn test_join_or_create_creates_when_empty() {
     let mut mgr = RoomManager::<CounterGame>::new();
     let room_id = mgr
-        .join_or_create(pid(1), CounterConfig::default())
+        .join_or_create(pid(1), CounterConfig::default(), dummy_sender())
         .await
         .unwrap();
 
@@ -368,7 +375,7 @@ async fn test_join_or_create_joins_existing() {
     let _r1 = mgr.create_room(CounterConfig::default());
 
     let room_id = mgr
-        .join_or_create(pid(1), CounterConfig::default())
+        .join_or_create(pid(1), CounterConfig::default(), dummy_sender())
         .await
         .unwrap();
 
@@ -380,12 +387,99 @@ async fn test_join_or_create_joins_existing() {
 #[tokio::test]
 async fn test_join_or_create_already_in_room() {
     let mut mgr = RoomManager::<CounterGame>::new();
-    mgr.join_or_create(pid(1), CounterConfig::default())
+    mgr.join_or_create(pid(1), CounterConfig::default(), dummy_sender())
         .await
         .unwrap();
 
     let result = mgr
-        .join_or_create(pid(1), CounterConfig::default())
+        .join_or_create(pid(1), CounterConfig::default(), dummy_sender())
         .await;
     assert!(result.is_err());
+}
+
+// =========================================================================
+// State synchronization tests
+// =========================================================================
+
+#[tokio::test]
+async fn test_state_broadcast_on_game_start() {
+    use arcforge_room::RoomOutbound;
+
+    let mut mgr = RoomManager::<CounterGame>::new();
+    let room = mgr.create_room(CounterConfig { finish_at: 10 });
+
+    let (tx1, mut rx1) = mpsc::unbounded_channel();
+    let (tx2, mut rx2) = mpsc::unbounded_channel();
+
+    mgr.join_room(pid(1), room, tx1).await.unwrap();
+    mgr.join_room(pid(2), room, tx2).await.unwrap();
+
+    // Game auto-starts at min_players=2. Both players should get state.
+    tokio::time::sleep(Duration::from_millis(10)).await;
+
+    let msg1 = rx1.try_recv().expect("player 1 should get state");
+    let msg2 = rx2.try_recv().expect("player 2 should get state");
+
+    assert!(matches!(msg1, RoomOutbound::State(_)));
+    assert!(matches!(msg2, RoomOutbound::State(_)));
+}
+
+#[tokio::test]
+async fn test_game_message_broadcast() {
+    use arcforge_room::RoomOutbound;
+
+    let mut mgr = RoomManager::<CounterGame>::new();
+    let room = mgr.create_room(CounterConfig { finish_at: 10 });
+
+    let (tx1, mut rx1) = mpsc::unbounded_channel();
+    let (tx2, mut rx2) = mpsc::unbounded_channel();
+
+    mgr.join_room(pid(1), room, tx1).await.unwrap();
+    mgr.join_room(pid(2), room, tx2).await.unwrap();
+
+    // Drain initial state messages.
+    tokio::time::sleep(Duration::from_millis(10)).await;
+    let _ = rx1.try_recv();
+    let _ = rx2.try_recv();
+
+    // Send a game message.
+    mgr.route_message(pid(1), Increment).await.unwrap();
+    tokio::time::sleep(Duration::from_millis(10)).await;
+
+    // Both players should receive the game message (Recipient::All).
+    let msg1 = rx1.try_recv().expect("player 1 should get message");
+    let msg2 = rx2.try_recv().expect("player 2 should get message");
+
+    match (msg1, msg2) {
+        (
+            RoomOutbound::Message(CounterEvent::Counted(1)),
+            RoomOutbound::Message(CounterEvent::Counted(1)),
+        ) => {}
+        other => panic!("expected Counted(1) for both, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn test_leave_stops_receiving() {
+    let mut mgr = RoomManager::<CounterGame>::new();
+    let room = mgr.create_room(CounterConfig { finish_at: 10 });
+
+    let (tx1, mut rx1) = mpsc::unbounded_channel();
+    let (tx2, _rx2) = mpsc::unbounded_channel();
+
+    mgr.join_room(pid(1), room, tx1).await.unwrap();
+    mgr.join_room(pid(2), room, tx2).await.unwrap();
+
+    // Drain initial state.
+    tokio::time::sleep(Duration::from_millis(10)).await;
+    while rx1.try_recv().is_ok() {}
+
+    // Player 1 leaves.
+    mgr.leave_room(pid(1)).await.unwrap();
+
+    // Player 2 sends a message — player 1 should NOT receive it.
+    mgr.route_message(pid(2), Increment).await.unwrap();
+    tokio::time::sleep(Duration::from_millis(10)).await;
+
+    assert!(rx1.try_recv().is_err());
 }
