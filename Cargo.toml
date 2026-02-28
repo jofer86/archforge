@@ -1,0 +1,42 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/arcforge",
+    "crates/arcforge-transport",
+    "crates/arcforge-protocol",
+    "crates/arcforge-session",
+    "crates/arcforge-room",
+    "crates/arcforge-tick",
+    "examples/tic-tac-toe",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/arcforge/arcforge"
+rust-version = "1.85"
+
+[workspace.dependencies]
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+# WebSocket
+tokio-tungstenite = "0.26"
+futures-util = "0.3"
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# Random (reconnection tokens)
+rand = "0.9"
+# Error handling
+thiserror = "2"
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+# Internal crates
+arcforge = { path = "crates/arcforge" }
+arcforge-transport = { path = "crates/arcforge-transport" }
+arcforge-protocol = { path = "crates/arcforge-protocol" }
+arcforge-session = { path = "crates/arcforge-session" }
+arcforge-room = { path = "crates/arcforge-room" }
+arcforge-tick = { path = "crates/arcforge-tick" }

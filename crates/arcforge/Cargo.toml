@@ -1,0 +1,19 @@
+[package]
+name = "arcforge"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Low-latency game backend framework for web games"
+
+[dependencies]
+arcforge-transport = { workspace = true }
+arcforge-protocol = { workspace = true }
+arcforge-session = { workspace = true }
+arcforge-room = { workspace = true }
+arcforge-tick = { workspace = true }
+tokio = { workspace = true }
+serde = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }

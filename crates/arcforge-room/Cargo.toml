@@ -1,0 +1,15 @@
+[package]
+name = "arcforge-room"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Room lifecycle management for Arcforge"
+
+[dependencies]
+arcforge-session = { workspace = true }
+arcforge-tick = { workspace = true }
+tokio = { workspace = true }
+serde = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
