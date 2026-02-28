@@ -60,7 +60,7 @@ impl GameLogic for EchoGame {
 
     fn room_config() -> RoomConfig {
         RoomConfig {
-            min_players: 1,
+            min_players: 2,
             max_players: 4,
             ..RoomConfig::default()
         }
@@ -412,5 +412,139 @@ async fn test_multiple_connections_independent() {
             assert_eq!(*p2, PlayerId(20));
         }
         _ => panic!("expected two HandshakeAcks"),
+    }
+}
+
+#[tokio::test]
+async fn test_list_rooms_empty_server() {
+    let addr = start_server().await;
+    let mut ws = connect(&addr).await;
+    handshake(&mut ws, 1).await;
+
+    let list_req = Envelope {
+        seq: 1,
+        timestamp: 0,
+        channel: Channel::ReliableOrdered,
+        payload: Payload::System(SystemMessage::ListRooms),
+    };
+    ws.send(encode_envelope(&list_req)).await.expect("send");
+
+    let msg = ws.next().await.unwrap().expect("recv");
+    let env = decode_envelope(msg);
+    match env.payload {
+        Payload::System(SystemMessage::RoomList { rooms }) => {
+            assert!(rooms.is_empty());
+        }
+        other => panic!("expected RoomList, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn test_join_or_create_creates_room() {
+    let addr = start_server().await;
+    let mut ws = connect(&addr).await;
+    handshake(&mut ws, 1).await;
+
+    let joc = Envelope {
+        seq: 1,
+        timestamp: 0,
+        channel: Channel::ReliableOrdered,
+        payload: Payload::System(SystemMessage::JoinOrCreate {
+            name: "test".into(),
+            options: vec![],
+        }),
+    };
+    ws.send(encode_envelope(&joc)).await.expect("send");
+
+    let msg = ws.next().await.unwrap().expect("recv");
+    let env = decode_envelope(msg);
+    match env.payload {
+        Payload::System(SystemMessage::RoomJoined { room_id, .. }) => {
+            assert!(room_id.0 > 0);
+        }
+        other => panic!("expected RoomJoined, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn test_join_or_create_second_player_joins_existing() {
+    let addr = start_server().await;
+
+    // Player 1 creates a room via JoinOrCreate.
+    let mut ws1 = connect(&addr).await;
+    handshake(&mut ws1, 1).await;
+
+    let joc = Envelope {
+        seq: 1,
+        timestamp: 0,
+        channel: Channel::ReliableOrdered,
+        payload: Payload::System(SystemMessage::JoinOrCreate {
+            name: "test".into(),
+            options: vec![],
+        }),
+    };
+    ws1.send(encode_envelope(&joc)).await.expect("send");
+    let msg1 = ws1.next().await.unwrap().expect("recv");
+    let env1 = decode_envelope(msg1);
+    let room_id_1 = match env1.payload {
+        Payload::System(SystemMessage::RoomJoined { room_id, .. }) => {
+            room_id
+        }
+        other => panic!("expected RoomJoined, got {other:?}"),
+    };
+
+    // Player 2 should join the same room.
+    let mut ws2 = connect(&addr).await;
+    handshake(&mut ws2, 2).await;
+    ws2.send(encode_envelope(&joc)).await.expect("send");
+    let msg2 = ws2.next().await.unwrap().expect("recv");
+    let env2 = decode_envelope(msg2);
+    match env2.payload {
+        Payload::System(SystemMessage::RoomJoined { room_id, .. }) => {
+            assert_eq!(room_id, room_id_1);
+        }
+        other => panic!("expected RoomJoined same room, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn test_list_rooms_after_join_or_create() {
+    let addr = start_server().await;
+    let mut ws = connect(&addr).await;
+    handshake(&mut ws, 1).await;
+
+    // Create a room first.
+    let joc = Envelope {
+        seq: 1,
+        timestamp: 0,
+        channel: Channel::ReliableOrdered,
+        payload: Payload::System(SystemMessage::JoinOrCreate {
+            name: "test".into(),
+            options: vec![],
+        }),
+    };
+    ws.send(encode_envelope(&joc)).await.expect("send");
+    let _ = ws.next().await.unwrap().expect("recv RoomJoined");
+
+    // Now list rooms from a second connection.
+    let mut ws2 = connect(&addr).await;
+    handshake(&mut ws2, 2).await;
+
+    let list_req = Envelope {
+        seq: 1,
+        timestamp: 0,
+        channel: Channel::ReliableOrdered,
+        payload: Payload::System(SystemMessage::ListRooms),
+    };
+    ws2.send(encode_envelope(&list_req)).await.expect("send");
+
+    let msg = ws2.next().await.unwrap().expect("recv");
+    let env = decode_envelope(msg);
+    match env.payload {
+        Payload::System(SystemMessage::RoomList { rooms }) => {
+            assert_eq!(rooms.len(), 1);
+            assert_eq!(rooms[0].player_count, 1);
+        }
+        other => panic!("expected RoomList, got {other:?}"),
     }
 }
