@@ -1,3 +1,6 @@
+
+<img width="1024" height="1024" alt="Rectangle (2)" src="https://github.com/user-attachments/assets/e8bd071f-1854-4d22-bb15-8d478bf60d39" />
+
 # Arcforge
 
 Low-latency game backend framework for web games, built in Rust.
