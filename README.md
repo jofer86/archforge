@@ -1,5 +1,5 @@
+<img width="1024" height="1024" alt="Rectangle (3)" src="https://github.com/user-attachments/assets/8e0d1108-1840-438c-8ff7-a869d8d0fb87" />
 
-<img width="1024" height="1024" alt="Rectangle (2)" src="https://github.com/user-attachments/assets/e8bd071f-1854-4d22-bb15-8d478bf60d39" />
 
 # Arcforge
 
