@@ -342,7 +342,8 @@ impl<G: GameLogic> RoomActor<G> {
 
     fn transition_to_starting(&mut self) {
         self.state = RoomState::Starting;
-        let players: Vec<PlayerId> = self.players.iter().copied().collect();
+        let mut players: Vec<PlayerId> = self.players.iter().copied().collect();
+        players.sort_by_key(|p| p.0);
         self.game_state =
             Some(G::init(&self.game_config, &players));
         self.state = RoomState::InProgress;
